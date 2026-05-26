@@ -4,6 +4,7 @@ import numpy as np
 import yfinance as yf
 import requests
 import time
+import google.generativeai as genai
 
 # --- KONFIGURASI HALAMAN WEB ---
 st.set_page_config(page_title="Screener Saham BEI", page_icon="📈", layout="wide")
@@ -14,7 +15,6 @@ def dapatkan_kurs_usd_idr():
     """Mengambil kurs USD ke IDR terkini secara berlapis (Yahoo -> Public API -> Statis).
        Mengembalikan tuple: (nilai_kurs, sumber_data)
     """
-    # 1. Coba via Yahoo Finance (Sistem Utama)
     try:
         ticker = yf.Ticker("IDR=X")
         hist = ticker.history(period="1d")
@@ -23,7 +23,6 @@ def dapatkan_kurs_usd_idr():
     except Exception:
         pass
     
-    # 2. Cadangan Dinamis: via Public Exchange Rate API (Akurat & Terpercaya)
     try:
         response = requests.get("https://open.er-api.com/v6/latest/USD", timeout=5)
         if response.status_code == 200:
@@ -33,27 +32,22 @@ def dapatkan_kurs_usd_idr():
     except Exception:
         pass
 
-    # 3. Jaring Pengaman Terakhir (Hanya dipakai jika server benar-benar tidak bisa akses internet luar)
     return 16200.0, "Sistem Cadangan (Statis)"
 
-# Menggunakan cache agar web tidak lemot saat pengguna mengganti filter
 @st.cache_data(ttl=3600, show_spinner=False)
 def dapatkan_data_saham(ticker_symbol, periode="6mo", kurs_usd_aktif=16200.0):
     try:
         ticker = yf.Ticker(ticker_symbol)
         info = {}
         
-        # 1. Coba ambil fundamental data dengan retry (3 kali percobaan)
         for attempt in range(3):
             try:
                 info = ticker.info
-                # Cek apakah info valid dan bukan sekadar dictionary kosong
                 if info and 'symbol' in info: 
                     break
             except Exception:
-                time.sleep(1) # Jeda sebelum mencoba lagi
+                time.sleep(1) 
         
-        # 2. Jika cara bawaan gagal (sering terjadi di Streamlit Cloud), gunakan Custom Session
         if not info or 'symbol' not in info:
             session = requests.Session()
             session.headers.update({
@@ -69,17 +63,14 @@ def dapatkan_data_saham(ticker_symbol, periode="6mo", kurs_usd_aktif=16200.0):
                 if info is None:
                     info = {}
             except Exception:
-                info = {} # Menyerah dan gunakan data kosong jika kedua cara tetap diblokir
+                info = {} 
         
-        # 3. Ekstraksi Data Historis Harga (Dipindahkan ke atas agar bisa dipakai menghitung rasio)
         hist = ticker.history(period=periode)
         if hist.empty or len(hist) < 30:
-            return None # Skip jika data harga kurang untuk dihitung MA/RSI
+            return None 
         
         harga_terakhir = hist['Close'].iloc[-1]
         
-        # --- 4. SISTEM KOREKSI KURS INDEPENDEN (FIX ANOMALI YAHOO) ---
-        # Cek mata uang fundamental. Jika USD, ubah EPS dan BVPS ke Rupiah.
         mata_uang = info.get('financialCurrency', 'IDR')
         kurs_usd = kurs_usd_aktif if mata_uang == 'USD' else 1.0
         
@@ -89,11 +80,9 @@ def dapatkan_data_saham(ticker_symbol, periode="6mo", kurs_usd_aktif=16200.0):
         if eps is not None: eps = eps * kurs_usd
         if bvps is not None: bvps = bvps * kurs_usd
         
-        # Hitung Ulang Valuasi (Mengabaikan PBV & PE bawaan Yahoo yang sering kacau pada emiten Dolar)
         pe_ratio = (harga_terakhir / eps) if (eps and eps > 0) else np.nan
         pbv = (harga_terakhir / bvps) if (bvps and bvps > 0) else np.nan
         
-        # Fundamental lainnya (Rasio persentase biasanya aman dari anomali kurs)
         roe = info.get('returnOnEquity')
         der = info.get('debtToEquity') 
         div_yield = info.get('dividendYield') or info.get('trailingAnnualDividendYield')
@@ -103,11 +92,9 @@ def dapatkan_data_saham(ticker_symbol, periode="6mo", kurs_usd_aktif=16200.0):
         if der is not None: der = der / 100.0
             
         harga_wajar_graham = np.nan
-        # Rumus Graham (Sekarang sudah kebal terhadap masalah mata uang)
         if eps and bvps and eps > 0 and bvps > 0:
             harga_wajar_graham = np.sqrt(22.5 * eps * bvps)
             
-        # Ekstraksi data teknikal lanjutan
         hist['MA20'] = hist['Close'].rolling(window=20).mean()
         ma20_terakhir = hist['MA20'].iloc[-1]
         
@@ -163,7 +150,6 @@ def dapatkan_data_saham(ticker_symbol, periode="6mo", kurs_usd_aktif=16200.0):
             'Stoch_K': stoch_k_terakhir
         }
     except Exception as e:
-        # Jika terjadi error fatal di luar dugaan
         print(f"Error fetching {ticker_symbol}: {str(e)}")
         return None
 
@@ -171,7 +157,6 @@ def saring_saham_pilihan(daftar_saham, periode, strategi_pilihan, kurs_usd_aktif
     hasil_analisis = []
     error_tickers = []
     
-    # Progress bar di UI web
     progress_text = "Memindai saham..."
     my_bar = st.progress(0, text=progress_text)
     
@@ -182,12 +167,10 @@ def saring_saham_pilihan(daftar_saham, periode, strategi_pilihan, kurs_usd_aktif
         else:
             error_tickers.append(tkr.replace('.JK', ''))
             
-        # Update progress bar
         my_bar.progress((i + 1) / len(daftar_saham), text=f"Memindai {tkr}...")
-        # Jeda 0.5 detik per iterasi untuk meminimalisasi risiko diblokir karena rate-limit
         time.sleep(0.5) 
         
-    my_bar.empty() # Hilangkan bar setelah selesai
+    my_bar.empty() 
     
     if error_tickers:
         st.warning(f"⚠️ Gagal menarik data historis untuk: **{', '.join(error_tickers)}**. Cek apakah kode saham valid.")
@@ -199,12 +182,10 @@ def saring_saham_pilihan(daftar_saham, periode, strategi_pilihan, kurs_usd_aktif
     df['Sinyal_Investasi'] = 'Pantau'
     df['Sinyal_Trading_Pendek'] = 'Pantau/Tahan' 
     
-    # Logika Trading (Aman dari NaN)
     df.loc[(df['RSI_14'] > 75) | (df['Stoch_K'] > 80), 'Sinyal_Trading_Pendek'] = 'JUAL (Overbought)'
     df.loc[(df['RSI_14'] < 35) | (df['Stoch_K'] < 20), 'Sinyal_Trading_Pendek'] = 'BELI (Oversold)'
     df.loc[(df['MACD_Bullish'] == True) & (df['Di_Atas_MA20'] == True) & (df['RSI_14'] >= 35) & (df['RSI_14'] <= 70), 'Sinyal_Trading_Pendek'] = 'BELI (Momentum)'
     
-    # Logika Investasi
     if strategi_pilihan == 1:
         df.loc[(df['PBV'] < 1.5) & (df['PE_Ratio'] < 15) & (df['ROE'] > 0.08), 'Sinyal_Investasi'] = 'BELI (Value Saham Murah)'
     elif strategi_pilihan == 2:
@@ -218,7 +199,41 @@ def saring_saham_pilihan(daftar_saham, periode, strategi_pilihan, kurs_usd_aktif
 
     return df
 
-# --- FUNGSI PEMBUAT NARASI ANALISA KOMPREHENSIF ---
+# --- FUNGSI ANALISA MENDALAM DENGAN GEMINI AI ---
+def analisa_gemini_ai(df, strategi, api_key):
+    try:
+        genai.configure(api_key=api_key)
+        # Menggunakan model Gemini 1.5 Flash untuk analisis cepat dan cerdas
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        # Konversi dataframe penting ke format string untuk dibaca AI
+        kolom_penting = ['Ticker', 'Harga', 'PBV', 'PE_Ratio', 'ROE', 'RSI_14', 'MACD_Bullish', 'Sinyal_Investasi', 'Sinyal_Trading_Pendek']
+        df_ai = df[kolom_penting].copy()
+        data_str = df_ai.to_markdown(index=False)
+        
+        prompt = f"""
+        Anda adalah seorang Analis Saham Profesional dan Fund Manager berpengalaman dari Wall Street.
+        Tugas Anda adalah menganalisa hasil screening saham di Bursa Efek Indonesia (BEI) berikut ini.
+        
+        Strategi Screening yang dipilih user: "{strategi}"
+        
+        Tabel Data Saham Terkini:
+        {data_str}
+        
+        Berikan ringkasan eksekutif dan analisa mendalam yang mencakup:
+        1. **Highlight Fundamental:** Dari data di atas, saham mana yang memiliki valuasi paling menarik (undervalued berdasarkan PBV/PE) atau fundamental terkuat (berdasarkan ROE)?
+        2. **Kondisi Teknikal:** Saham mana yang sedang memiliki momentum teknikal yang kuat (MACD Bullish, Sinyal Trading Beli), atau sedang berada di area pantulan murah (Oversold berdasarkan RSI)?
+        3. **Rekomendasi Taktis:** Kesimpulan aksi apa yang sebaiknya diambil. Fokus pada 1-3 saham terbaik untuk dieksekusi berdasarkan kombinasi fundamental dan teknikal.
+        
+        Gunakan gaya bahasa Indonesia yang profesional, tajam, dan mudah dipahami. Jangan sekadar mengulang isi tabel, berikan *insight* dan interpretasi data yang bernilai bagi investor. Format menggunakan Markdown.
+        """
+        
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"⚠️ **Gagal menghasilkan analisa AI:** {str(e)}\n\nPastikan API Key valid dan koneksi internet stabil."
+
+# --- FUNGSI PEMBUAT NARASI OTOMATIS (FALLBACK TRADISIONAL) ---
 def buat_narasi_analisa(df, nama_strategi):
     if df.empty:
         return ""
@@ -227,51 +242,40 @@ def buat_narasi_analisa(df, nama_strategi):
     saham_beli_invest = df[df['Sinyal_Investasi'].str.contains('BELI', na=False)]['Ticker'].tolist()
     saham_beli_trading = df[df['Sinyal_Trading_Pendek'].str.contains('BELI', na=False)]['Ticker'].tolist()
     
-    # Gabungkan sinyal beli yang unik
     rekomendasi_beli = list(set(saham_beli_invest + saham_beli_trading))
-    
-    # Analisis Fundamental (Aman dari NaN)
     saham_murah = df[(df['PBV'] < 1.5) & (df['ROE'] > 0.10)]['Ticker'].tolist()
-    
-    # Analisis Teknikal
     saham_uptrend = df[(df['MACD_Bullish'] == True) & (df['Di_Atas_MA20'] == True)]['Ticker'].tolist()
     saham_oversold = df[(df['RSI_14'] < 35) | (df['Stoch_K'] < 20)]['Ticker'].tolist()
     saham_overbought = df[(df['RSI_14'] > 75) | (df['Stoch_K'] > 80)]['Ticker'].tolist()
     
-    narasi = f"### 💡 Ringkasan Eksekutif & Analisa\n"
-    narasi += f"Dari **{total} saham** yang dipindai menggunakan strategi **{nama_strategi}**, berikut adalah intisari pergerakan pasarnya saat ini:\n\n"
+    narasi = f"### 💡 Ringkasan Eksekutif (Berbasis Aturan)\n"
+    narasi += f"Dari **{total} saham** yang dipindai menggunakan strategi **{nama_strategi}**, berikut adalah intisari pasarnya:\n\n"
     
-    # 1. Rekomendasi Keseluruhan
     if rekomendasi_beli:
-        narasi += f"- 🎯 **Fokus Utama:** Berdasarkan filter yang Anda pilih, saham **{', '.join(rekomendasi_beli)}** masuk ke dalam zona **BELI** dan layak mendapat perhatian khusus untuk dieksekusi.\n"
+        narasi += f"- 🎯 **Fokus Utama:** Saham **{', '.join(rekomendasi_beli)}** masuk ke dalam zona **BELI**.\n"
     else:
-        narasi += f"- ⏳ **Fokus Utama:** Belum ada saham yang memenuhi kriteria **BELI** yang kuat untuk strategi ini. Mayoritas masih berada di fase *Pantau* atau *Hold*.\n"
+        narasi += f"- ⏳ **Fokus Utama:** Belum ada saham yang memenuhi kriteria **BELI** yang kuat. Mayoritas fase *Pantau*.\n"
         
-    # 2. Narasi Fundamental (Value & Profitability)
     narasi += "- 💰 **Valuasi & Fundamental:** "
     if saham_murah:
-        narasi += f"Saham **{', '.join(saham_murah)}** terdeteksi sedang 'salah harga' (Sangat Murah: PBV < 1.5x) namun perusahaannya sehat dengan kemampuan mencetak laba yang tinggi (ROE > 10%).\n"
+        narasi += f"Saham **{', '.join(saham_murah)}** terdeteksi sedang 'salah harga' (Sangat Murah: PBV < 1.5x) namun sehat (ROE > 10%).\n"
     else:
-        narasi += f"Belum ditemukan saham yang valuasinya sangat terdiskon (PBV < 1.5x) sekaligus memiliki fundamental profitabilitas kuat (ROE > 10%) pada daftar pantauan ini.\n"
+        narasi += f"Belum ditemukan saham dengan valuasi sangat terdiskon sekaligus profitabilitas kuat.\n"
         
-    # 3. Narasi Teknikal (Momentum)
     narasi += "- 📈 **Momentum Teknikal:** "
     if saham_uptrend:
-        narasi += f"Pergerakan harga **{', '.join(saham_uptrend)}** sedang dalam tren naik (*Uptrend*) yang solid, ditandai dengan formasi MACD yang Bullish dan harga bertahan di atas rata-rata 20 harinya.\n"
+        narasi += f"Harga **{', '.join(saham_uptrend)}** sedang dalam tren naik (*Uptrend*) yang solid.\n"
     else:
-        narasi += f"Secara teknikal, mayoritas saham sedang lesu atau berkonsolidasi. Belum ada yang menunjukkan dorongan tren naik yang signifikan.\n"
+        narasi += f"Mayoritas saham sedang lesu atau berkonsolidasi.\n"
         
-    # 4. Narasi Overbought / Oversold
     if saham_oversold:
-        narasi += f"- 🛒 **Peluang Rebound (Buy The Dip):** Saham **{', '.join(saham_oversold)}** sudah masuk ke area jenuh jual (*Oversold*). Harganya sudah didiskon cukup dalam secara teknikal, membuka peluang terjadinya pantulan naik (*technical rebound*) dalam waktu dekat.\n"
+        narasi += f"- 🛒 **Peluang Rebound:** Saham **{', '.join(saham_oversold)}** sudah jenuh jual (*Oversold*), berpeluang mantul naik.\n"
     if saham_overbought:
-        narasi += f"- ⚠️ **Rawan Koreksi (Take Profit):** Saham **{', '.join(saham_overbought)}** sudah masuk area jenuh beli (*Overbought*). Berhati-hatilah jika baru ingin masuk, atau pertimbangkan untuk merealisasikan keuntungan jika Anda sudah punya barang di bawah.\n"
+        narasi += f"- ⚠️ **Rawan Koreksi:** Saham **{', '.join(saham_overbought)}** sudah jenuh beli (*Overbought*). Hati-hati koreksi.\n"
         
     return narasi
 
-# --- FUNGSI PEMBUAT RINGKASAN AKSI & TARGET HARGA ---
 def buat_ringkasan_aksi(df):
-    # Ambil saham yang memiliki sinyal BELI di Investasi ATAU Trading
     saham_rekomendasi = df[
         (df['Sinyal_Investasi'].str.contains('BELI', na=False)) |
         (df['Sinyal_Trading_Pendek'].str.contains('BELI', na=False))
@@ -288,8 +292,6 @@ def buat_ringkasan_aksi(df):
     
     for _, row in saham_rekomendasi.iterrows():
         ticker = row['Ticker']
-        
-        # Gabungkan jenis sinyal
         sinyal_list = []
         if 'BELI' in str(row['Sinyal_Investasi']):
             sinyal_list.append("Investasi")
@@ -298,8 +300,6 @@ def buat_ringkasan_aksi(df):
             sinyal_list.append(f"Trading ({jenis_trading})")
             
         kategori = " & ".join(sinyal_list)
-        
-        # Format harga untuk ringkasan
         t_beli = f"Rp {int(row['Target_Beli']):,}" if pd.notnull(row['Target_Beli']) and not np.isnan(row['Target_Beli']) else "-"
         t_jual = f"Rp {int(row['Target_Jual']):,}" if pd.notnull(row['Target_Jual']) and not np.isnan(row['Target_Jual']) else "-"
         
@@ -309,12 +309,11 @@ def buat_ringkasan_aksi(df):
 
 # --- ANTARMUKA PENGGUNA (UI) ---
 st.title("📈 Web App Screener Saham BEI")
-st.markdown("Aplikasi web ini menyaring saham berdasarkan analisis fundamental dan sentimen teknikal secara _real-time_.")
+st.markdown("Aplikasi web ini menyaring saham berdasarkan analisis fundamental dan sentimen teknikal secara _real-time_, diperkuat dengan **AI Analis Profesional**.")
 
 # Sidebar untuk Input
 st.sidebar.header("⚙️ Pengaturan Analisis")
 
-# --- KELOMPOK EMITEN (BARU) ---
 st.sidebar.subheader("📋 Kelompok Emiten")
 kategori_saham = {
     "🌟 Rekomendasi (Campuran)": "PKPK, BSDE, PWON, CTRA, INDF, ICBP, PGAS, ADRO, EXCL, TLKM, ITMG, BBCA",
@@ -349,7 +348,6 @@ opsi_strategi = {
 pilihan_strategi_label = st.sidebar.radio("Strategi Screening:", list(opsi_strategi.keys()), index=4)
 strategi = opsi_strategi[pilihan_strategi_label]
 
-# Panel Informasi Kurs di Sidebar
 st.sidebar.markdown("---")
 st.sidebar.subheader("💵 Pengaturan Kurs (USD/IDR)")
 opsi_kurs = st.sidebar.radio("Sumber Kurs:", ["Otomatis (Live API)", "Manual"])
@@ -362,6 +360,16 @@ else:
 
 st.sidebar.info(f"**Kurs Aktif:** Rp {kurs_val:,.0f}\n\n**Sumber:** {kurs_sumber}")
 
+# --- INTEGRASI GOOGLE GEMINI AI (BARU) ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("🤖 Analisis AI Mendalam")
+st.sidebar.markdown("Aktifkan fitur ini agar AI menganalisa data saham layaknya analis Wall Street.")
+gunakan_ai = st.sidebar.checkbox("Gunakan Google Gemini AI")
+
+# HARDCODE API KEY DI SINI
+# PENTING: Jangan unggah script ini ke GitHub Publik jika API Key terisi!
+api_key_input = "AIzaSyD7cr3EQ7OxkGNfRoj3eK21IPuqtNXKEFI"
+
 # Tombol Eksekusi
 if st.sidebar.button("Jalankan Pemindaian 🚀", type="primary"):
     
@@ -370,13 +378,20 @@ if st.sidebar.button("Jalankan Pemindaian 🚀", type="primary"):
     if not df_hasil.empty:
         df_hasil = df_hasil.sort_values(by=['Sinyal_Investasi', 'Sinyal_Trading_Pendek'], ascending=[False, False])
         
-        # Generate narasi berdasarkan raw data sebelum di-format menjadi string
-        narasi_komprehensif = buat_narasi_analisa(df_hasil, pilihan_strategi_label)
+        # Eksekusi Analisa AI vs Tradisional
+        if gunakan_ai and api_key_input and api_key_input != "MASUKKAN_API_KEY_ANDA_DI_SINI":
+            with st.spinner("🤖 AI sedang membedah data dan menyusun analisa mendalam..."):
+                narasi_komprehensif = analisa_gemini_ai(df_hasil, pilihan_strategi_label, api_key_input)
+                narasi_komprehensif = f"### 🤖 Analisa Eksekutif AI (Gemini)\n\n{narasi_komprehensif}"
+        else:
+            if gunakan_ai and (not api_key_input or api_key_input == "MASUKKAN_API_KEY_ANDA_DI_SINI"):
+                st.warning("Silakan ganti placeholder 'MASUKKAN_API_KEY_ANDA_DI_SINI' di dalam script dengan API Key yang valid.")
+            narasi_komprehensif = buat_narasi_analisa(df_hasil, pilihan_strategi_label)
+            
         ringkasan_aksi = buat_ringkasan_aksi(df_hasil)
         
         tampil = df_hasil.copy()
         
-        # Formatting Tabel Web secara aman (jika data None, ubah jadi '-')
         tampil['PBV'] = tampil['PBV'].apply(lambda x: f"{x:.2f}x" if pd.notnull(x) else "-")
         tampil['ROE'] = tampil['ROE'].apply(lambda x: f"{x*100:.1f}%" if pd.notnull(x) else "-")
         tampil['RSI_14'] = tampil['RSI_14'].apply(lambda x: f"{x:.0f}" if pd.notnull(x) else "-")
@@ -386,30 +401,24 @@ if st.sidebar.button("Jalankan Pemindaian 🚀", type="primary"):
         tampil['Target_Beli'] = tampil['Target_Beli'].apply(lambda x: f"Rp{int(x):,}" if pd.notnull(x) and not np.isnan(x) else "-")
         tampil['Target_Jual'] = tampil['Target_Jual'].apply(lambda x: f"Rp{int(x):,}" if pd.notnull(x) and not np.isnan(x) else "-")
         
-        # Kolom dinamis berdasarkan strategi
         kolom = ['Ticker', 'Harga', 'Harga_Wajar', 'Target_Beli', 'Target_Jual', 'PBV', 'ROE', 'RSI_14', 'MACD', 'Sinyal_Investasi', 'Sinyal_Trading_Pendek']
         
         st.success("✅ Pemindaian Selesai!")
         
-        # --- TAMPILKAN NARASI DI SINI ---
         st.info(narasi_komprehensif)
         
-        # --- TAMPILKAN RINGKASAN AKSI DI SINI ---
         if ringkasan_aksi:
             st.success(ringkasan_aksi)
             
         st.divider()
-        
-        # Menampilkan dataframe yang responsif
         st.dataframe(tampil[kolom], use_container_width=True, hide_index=True)
         
-        # Disclaimer lengkap tentang keanehan/kekosongan data dari Yahoo Finance
         st.info("""
         **Catatan Target Harga & Integritas Data:**
         * **Harga Wajar:** Menggunakan rumus *Graham Number*. Jika kosong (`-`), berarti EPS perusahaan negatif (rugi) atau datanya belum diperbarui oleh Yahoo Finance.
         * **Target Beli & Jual:** Dihitung dari area Support & Resistance teknikal.
         * **Sel Kosong (`-`):** Terjadi karena keterbatasan database gratis Yahoo Finance untuk beberapa saham lapis menengah/kecil di BEI (IDX).
-        * **Sistem Koreksi Kurs Aktif:** Aplikasi telah mendeteksi dan mengoreksi laporan keuangan emiten tambang (berbasis Dolar AS) ke Rupiah secara otomatis sehingga nilai PBV, PE, dan Harga Wajar kini terhitung akurat.
+        * **Sistem Koreksi Kurs Aktif:** Aplikasi telah mendeteksi dan mengoreksi laporan keuangan emiten tambang (berbasis Dolar AS) ke Rupiah secara otomatis.
         """)
     else:
         st.error("Gagal mengambil data atau tidak ada saham yang valid.")
