@@ -13,21 +13,36 @@ st.set_page_config(page_title="Screener Saham BEI", page_icon="📈", layout="wi
 @st.cache_data(ttl=3600, show_spinner=False)
 def dapatkan_data_saham(ticker_symbol, periode="6mo"):
     try:
-        # Menambahkan Session dan User-Agent khusus untuk menghindari pemblokiran Anti-Bot Yahoo Finance di Cloud
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        })
+        ticker = yf.Ticker(ticker_symbol)
+        info = {}
         
-        ticker = yf.Ticker(ticker_symbol, session=session)
+        # 1. Coba ambil fundamental data dengan retry (3 kali percobaan)
+        for attempt in range(3):
+            try:
+                info = ticker.info
+                # Cek apakah info valid dan bukan sekadar dictionary kosong
+                if info and 'symbol' in info: 
+                    break
+            except Exception:
+                time.sleep(1) # Jeda sebelum mencoba lagi
         
-        # Penanganan khusus untuk ticker.info yang sering diblokir di Streamlit Cloud
-        try:
-            info = ticker.info
-            if info is None:
-                info = {}
-        except Exception:
-            info = {} # Fallback jika fundamental gagal, tetap bisa lanjut ke teknikal
+        # 2. Jika cara bawaan gagal (sering terjadi di Streamlit Cloud), gunakan Custom Session
+        if not info or 'symbol' not in info:
+            session = requests.Session()
+            session.headers.update({
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Connection": "keep-alive"
+            })
+            ticker_custom = yf.Ticker(ticker_symbol, session=session)
+            try:
+                info = ticker_custom.info
+                if info is None:
+                    info = {}
+            except Exception:
+                info = {} # Menyerah dan gunakan data kosong jika kedua cara tetap diblokir
         
         pe_ratio = info.get('forwardPE') or info.get('trailingPE')
         pbv = info.get('priceToBook')
