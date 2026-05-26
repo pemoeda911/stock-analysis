@@ -11,13 +11,15 @@ st.set_page_config(page_title="Screener Saham BEI", page_icon="📈", layout="wi
 # --- FUNGSI PENGAMBILAN DATA (DENGAN CACHE) ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def dapatkan_kurs_usd_idr():
-    """Mengambil kurs USD ke IDR terkini secara berlapis (Yahoo -> Public API -> Statis)."""
+    """Mengambil kurs USD ke IDR terkini secara berlapis (Yahoo -> Public API -> Statis).
+       Mengembalikan tuple: (nilai_kurs, sumber_data)
+    """
     # 1. Coba via Yahoo Finance (Sistem Utama)
     try:
         ticker = yf.Ticker("IDR=X")
         hist = ticker.history(period="1d")
         if not hist.empty:
-            return float(hist['Close'].iloc[-1])
+            return float(hist['Close'].iloc[-1]), "Yahoo Finance"
     except Exception:
         pass
     
@@ -27,16 +29,16 @@ def dapatkan_kurs_usd_idr():
         if response.status_code == 200:
             data = response.json()
             if 'rates' in data and 'IDR' in data['rates']:
-                return float(data['rates']['IDR'])
+                return float(data['rates']['IDR']), "ExchangeRate-API"
     except Exception:
         pass
 
     # 3. Jaring Pengaman Terakhir (Hanya dipakai jika server benar-benar tidak bisa akses internet luar)
-    return 16200.0
+    return 16200.0, "Sistem Cadangan (Statis)"
 
 # Menggunakan cache agar web tidak lemot saat pengguna mengganti filter
 @st.cache_data(ttl=3600, show_spinner=False)
-def dapatkan_data_saham(ticker_symbol, periode="6mo"):
+def dapatkan_data_saham(ticker_symbol, periode="6mo", kurs_usd_aktif=16200.0):
     try:
         ticker = yf.Ticker(ticker_symbol)
         info = {}
@@ -79,7 +81,7 @@ def dapatkan_data_saham(ticker_symbol, periode="6mo"):
         # --- 4. SISTEM KOREKSI KURS INDEPENDEN (FIX ANOMALI YAHOO) ---
         # Cek mata uang fundamental. Jika USD, ubah EPS dan BVPS ke Rupiah.
         mata_uang = info.get('financialCurrency', 'IDR')
-        kurs_usd = dapatkan_kurs_usd_idr() if mata_uang == 'USD' else 1.0
+        kurs_usd = kurs_usd_aktif if mata_uang == 'USD' else 1.0
         
         eps = info.get('trailingEps')
         bvps = info.get('bookValue')
@@ -165,7 +167,7 @@ def dapatkan_data_saham(ticker_symbol, periode="6mo"):
         print(f"Error fetching {ticker_symbol}: {str(e)}")
         return None
 
-def saring_saham_pilihan(daftar_saham, periode, strategi_pilihan):
+def saring_saham_pilihan(daftar_saham, periode, strategi_pilihan, kurs_usd_aktif):
     hasil_analisis = []
     error_tickers = []
     
@@ -174,7 +176,7 @@ def saring_saham_pilihan(daftar_saham, periode, strategi_pilihan):
     my_bar = st.progress(0, text=progress_text)
     
     for i, tkr in enumerate(daftar_saham):
-        data = dapatkan_data_saham(tkr, periode)
+        data = dapatkan_data_saham(tkr, periode, kurs_usd_aktif)
         if data:
             hasil_analisis.append(data)
         else:
@@ -267,6 +269,44 @@ def buat_narasi_analisa(df, nama_strategi):
         
     return narasi
 
+# --- FUNGSI PEMBUAT RINGKASAN AKSI & TARGET HARGA ---
+def buat_ringkasan_aksi(df):
+    # Ambil saham yang memiliki sinyal BELI di Investasi ATAU Trading
+    saham_rekomendasi = df[
+        (df['Sinyal_Investasi'].str.contains('BELI', na=False)) |
+        (df['Sinyal_Trading_Pendek'].str.contains('BELI', na=False))
+    ]
+    
+    if saham_rekomendasi.empty:
+        return ""
+        
+    ringkasan = "### 🎯 Rekomendasi Aksi & Target Harga\n"
+    ringkasan += "Daftar saham dengan sinyal **BELI** beserta area harga ideal untuk dieksekusi:\n\n"
+    
+    ringkasan += "| Kode Saham | Kategori Sinyal Beli | Area Target Beli (Support) | Area Target Jual (Resisten) |\n"
+    ringkasan += "| :--- | :--- | :--- | :--- |\n"
+    
+    for _, row in saham_rekomendasi.iterrows():
+        ticker = row['Ticker']
+        
+        # Gabungkan jenis sinyal
+        sinyal_list = []
+        if 'BELI' in str(row['Sinyal_Investasi']):
+            sinyal_list.append("Investasi")
+        if 'BELI' in str(row['Sinyal_Trading_Pendek']):
+            jenis_trading = str(row['Sinyal_Trading_Pendek']).split('(')[-1].replace(')', '')
+            sinyal_list.append(f"Trading ({jenis_trading})")
+            
+        kategori = " & ".join(sinyal_list)
+        
+        # Format harga untuk ringkasan
+        t_beli = f"Rp {int(row['Target_Beli']):,}" if pd.notnull(row['Target_Beli']) and not np.isnan(row['Target_Beli']) else "-"
+        t_jual = f"Rp {int(row['Target_Jual']):,}" if pd.notnull(row['Target_Jual']) and not np.isnan(row['Target_Jual']) else "-"
+        
+        ringkasan += f"| **{ticker}** | {kategori} | **{t_beli}** | **{t_jual}** |\n"
+        
+    return ringkasan
+
 # --- ANTARMUKA PENGGUNA (UI) ---
 st.title("📈 Web App Screener Saham BEI")
 st.markdown("Aplikasi web ini menyaring saham berdasarkan analisis fundamental dan sentimen teknikal secara _real-time_.")
@@ -274,11 +314,26 @@ st.markdown("Aplikasi web ini menyaring saham berdasarkan analisis fundamental d
 # Sidebar untuk Input
 st.sidebar.header("⚙️ Pengaturan Analisis")
 
+# --- KELOMPOK EMITEN (BARU) ---
+st.sidebar.subheader("📋 Kelompok Emiten")
+kategori_saham = {
+    "🌟 Rekomendasi (Campuran)": "PKPK, BSDE, PWON, CTRA, INDF, ICBP, PGAS, ADRO, EXCL, TLKM, ITMG, BBCA",
+    "🏦 Perbankan (Big Bank)": "BBCA, BBRI, BMRI, BBNI, BRIS, ARTO",
+    "⚡ Energi & Tambang": "ADRO, ITMG, PTBA, UNTR, PGAS, MEDC, HRUM",
+    "🏢 Properti & Konstruksi": "BSDE, PWON, CTRA, SMRA, PTPP, WIKA, WSKT",
+    "🍜 Barang Konsumsi": "INDF, ICBP, MYOR, UNVR, KLBF, AMRT",
+    "📱 Telekomunikasi & Tech": "TLKM, EXCL, ISAT, GOTO, BUKA, MTEL"
+}
+
+pilihan_kategori = st.sidebar.radio("Pilih Daftar Saham:", list(kategori_saham.keys()))
+
 daftar_ticker = st.sidebar.text_area(
-    "Daftar Kode Saham (Pisahkan dengan koma):", 
-    "PKPK, BSDE, PWON, CTRA, INDF, ICBP, PGAS, ADRO, EXCL, TLKM, ITMG, BBCA"
+    "Daftar Kode Saham (Bisa diedit manual):", 
+    kategori_saham[pilihan_kategori]
 )
-ticker_pantauan = [t.strip() + ".JK" for t in daftar_ticker.split(",")]
+ticker_pantauan = [t.strip() + ".JK" for t in daftar_ticker.split(",") if t.strip()]
+
+st.sidebar.markdown("---")
 
 opsi_periode = {"3 Bulan": "3mo", "6 Bulan": "6mo", "1 Tahun": "1y"}
 pilihan_periode_label = st.sidebar.selectbox("Periode Historis:", list(opsi_periode.keys()), index=1)
@@ -294,16 +349,30 @@ opsi_strategi = {
 pilihan_strategi_label = st.sidebar.radio("Strategi Screening:", list(opsi_strategi.keys()), index=4)
 strategi = opsi_strategi[pilihan_strategi_label]
 
+# Panel Informasi Kurs di Sidebar
+st.sidebar.markdown("---")
+st.sidebar.subheader("💵 Pengaturan Kurs (USD/IDR)")
+opsi_kurs = st.sidebar.radio("Sumber Kurs:", ["Otomatis (Live API)", "Manual"])
+
+if opsi_kurs == "Otomatis (Live API)":
+    kurs_val, kurs_sumber = dapatkan_kurs_usd_idr()
+else:
+    kurs_val = st.sidebar.number_input("Masukkan Nilai Kurs (Rp):", min_value=10000.0, max_value=25000.0, value=16200.0, step=100.0)
+    kurs_sumber = "Manual (Input User)"
+
+st.sidebar.info(f"**Kurs Aktif:** Rp {kurs_val:,.0f}\n\n**Sumber:** {kurs_sumber}")
+
 # Tombol Eksekusi
 if st.sidebar.button("Jalankan Pemindaian 🚀", type="primary"):
     
-    df_hasil = saring_saham_pilihan(ticker_pantauan, periode, strategi)
+    df_hasil = saring_saham_pilihan(ticker_pantauan, periode, strategi, kurs_val)
     
     if not df_hasil.empty:
         df_hasil = df_hasil.sort_values(by=['Sinyal_Investasi', 'Sinyal_Trading_Pendek'], ascending=[False, False])
         
         # Generate narasi berdasarkan raw data sebelum di-format menjadi string
         narasi_komprehensif = buat_narasi_analisa(df_hasil, pilihan_strategi_label)
+        ringkasan_aksi = buat_ringkasan_aksi(df_hasil)
         
         tampil = df_hasil.copy()
         
@@ -324,6 +393,11 @@ if st.sidebar.button("Jalankan Pemindaian 🚀", type="primary"):
         
         # --- TAMPILKAN NARASI DI SINI ---
         st.info(narasi_komprehensif)
+        
+        # --- TAMPILKAN RINGKASAN AKSI DI SINI ---
+        if ringkasan_aksi:
+            st.success(ringkasan_aksi)
+            
         st.divider()
         
         # Menampilkan dataframe yang responsif
