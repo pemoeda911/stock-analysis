@@ -205,78 +205,143 @@ def saring_saham_pilihan(daftar_saham, periode, strategi_pilihan, kurs_usd_aktif
 
     return df
 
-# --- FUNGSI ANALISA MENDALAM DENGAN GEMINI AI ---
+
+# --- PROMPT AI STANDAR ---
+def buat_prompt_ai(df, strategi):
+    kolom_penting = ['Ticker', 'Harga', 'Harga_Wajar', 'Target_Beli', 'Target_Jual', 'PBV', 'PE_Ratio', 'ROE', 'RSI_14', 'MACD_Bullish', 'Sinyal_Investasi', 'Sinyal_Trading_Pendek']
+    df_ai = df[kolom_penting].copy()
+    
+    df_ai['MACD_Bullish'] = df_ai['MACD_Bullish'].apply(lambda x: "Uptrend" if x else "Downtrend")
+    df_ai['ROE'] = df_ai['ROE'].apply(lambda x: f"{x*100:.1f}%" if pd.notnull(x) else "-")
+    df_ai['PBV'] = df_ai['PBV'].apply(lambda x: f"{x:.2f}x" if pd.notnull(x) else "-")
+    df_ai['PE_Ratio'] = df_ai['PE_Ratio'].apply(lambda x: f"{x:.2f}x" if pd.notnull(x) else "-")
+    
+    data_str = df_ai.to_string(index=False)
+    
+    prompt = f"""
+    Anda adalah seorang Analis Saham Senior dari Wall Street.
+    Berikan analisa komprehensif berdasarkan hasil screening data saham Bursa Efek Indonesia (BEI) hari ini.
+    
+    Strategi Screening: "{strategi}"
+    
+    Data Saham Terkini:
+    {data_str}
+    
+    INSTRUKSI (Gunakan Markdown rapi):
+    1. **Tinjauan Pasar:** Ringkasan singkat kondisi kumpulan saham ini.
+    2. **Analisa Fundamental:** Sebutkan 1-2 saham dengan valuasi menarik (murah/ROE tinggi).
+    3. **Analisa Teknikal:** Sebutkan saham di area support optimal (dekat Target_Beli/RSI Oversold) atau momentum uptrend kuat.
+    4. **Rekomendasi Taktis:** Rekomendasi Beli/Tahan untuk top pick. Wajib sebutkan angka Target Beli & Target Jual dari tabel (Jangan buat harga sendiri).
+    5. **Manajemen Risiko:** Peringatan objektif singkat.
+    
+    Gunakan Bahasa Indonesia yang tajam dan profesional.
+    """
+    return prompt
+
+# --- FUNGSI AI: 1. GEMINI (UTAMA) ---
 def analisa_gemini_ai(df, strategi, api_key):
     try:
         genai.configure(api_key=api_key)
+        prompt = buat_prompt_ai(df, strategi)
         
-        # 1. Siapkan DataFrame khusus AI
-        kolom_penting = ['Ticker', 'Harga', 'Harga_Wajar', 'Target_Beli', 'Target_Jual', 'PBV', 'PE_Ratio', 'ROE', 'RSI_14', 'MACD_Bullish', 'Sinyal_Investasi', 'Sinyal_Trading_Pendek']
-        df_ai = df[kolom_penting].copy()
-        
-        df_ai['MACD_Bullish'] = df_ai['MACD_Bullish'].apply(lambda x: "Uptrend (Bullish)" if x else "Downtrend (Bearish)")
-        df_ai['ROE'] = df_ai['ROE'].apply(lambda x: f"{x*100:.1f}%" if pd.notnull(x) else "Data Kosong")
-        df_ai['PBV'] = df_ai['PBV'].apply(lambda x: f"{x:.2f}x" if pd.notnull(x) else "Data Kosong")
-        df_ai['PE_Ratio'] = df_ai['PE_Ratio'].apply(lambda x: f"{x:.2f}x" if pd.notnull(x) else "Data Kosong")
-        
-        data_str = df_ai.to_string(index=False)
-        
-        prompt = f"""
-        Anda adalah seorang Analis Saham Senior dan Fund Manager Institusional dari Wall Street.
-        Tugas Anda adalah memberikan analisa komprehensif, teliti, dan akurat berdasarkan hasil screening data pasar saham Bursa Efek Indonesia (BEI) hari ini.
-        
-        Strategi Screening yang digunakan pengguna: "{strategi}"
-        
-        Data Saham Terkini (Sudah disaring):
-        {data_str}
-        
-        INSTRUKSI ANALISA (Jawab menggunakan format Markdown yang rapi):
-        1. **Tinjauan Pasar (Overview):** Berikan pandangan singkat tentang kondisi kumpulan saham ini berdasarkan metrik yang ada (Apakah mayoritas mahal, murah, uptrend, atau oversold?).
-        2. **Analisa Fundamental (Valuasi & Kualitas):** Identifikasi 1 atau 2 saham dengan valuasi paling menarik (misal: diskon dalam terhadap Harga_Wajar, PBV rendah, PE rasional) namun memiliki profitabilitas (ROE) yang baik.
-        3. **Analisa Teknikal (Momentum & Timing):** Identifikasi saham yang berada di area pantulan optimal (dekat Target_Beli, RSI Oversold) atau yang memiliki dorongan tren kuat (MACD Bullish).
-        4. **Rekomendasi Taktis & Eksekusi:** Berikan rekomendasi spesifik (Beli/Tahan/Jual) untuk saham-saham top pick. Wajib sebutkan area Target Beli (Support) dan Target Jual (Resisten) sesuai data angka di tabel (JANGAN mengarang harga target sendiri).
-        5. **Manajemen Risiko:** Berikan satu paragraf peringatan objektif tentang risiko dari pilihan saham tersebut (misal: "meskipun PBV rendah, tren masih bearish").
-        
-        Gunakan gaya bahasa Indonesia yang tajam, meyakinkan, namun tetap objektif. Jangan sekadar membaca ulang tabel, tapi berikan *insight* korelasi antar datanya.
-        """
-        
-        # 2. Sistem Penemuan Model Dinamis (Mengatasi Error 404 Secara Otomatis)
-        valid_models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                valid_models.append(m.name)
-                
-        if not valid_models:
-            return "⚠️ **Gagal:** API Key Anda valid, tetapi tidak memiliki akses ke model AI generasi teks manapun."
+        valid_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        if not valid_models: return False, "API Key valid, tetapi model tidak tersedia."
             
-        # Prioritaskan model generasi terbaru, jika tidak ada, gunakan opsi pertama yang tersedia
         target_model = valid_models[0]
         for pref in ['models/gemini-1.5-flash', 'models/gemini-1.5-pro', 'models/gemini-1.0-pro', 'models/gemini-pro']:
             if pref in valid_models:
                 target_model = pref
                 break
                 
-        # Hapus prefix 'models/' agar format nama dikenali oleh SDK
         clean_model_name = target_model.replace('models/', '')
-        
-        # Eksekusi Analisa
         model = genai.GenerativeModel(clean_model_name)
         response = model.generate_content(prompt)
-
-        return response.text
+        return True, response.text
     except Exception as e:
-        return f"⚠️ **Gagal menghasilkan analisa AI:** {str(e)}\n\nPastikan API Key valid, dan tidak ada gangguan koneksi."
+        return False, str(e)
 
-# --- FUNGSI PEMBUAT NARASI OTOMATIS (FALLBACK TRADISIONAL) ---
+# --- FUNGSI AI: 2. GROQ / LLAMA 3 (CADANGAN) ---
+def analisa_groq_ai(df, strategi, api_key):
+    """Fungsi ini memanggil API Groq (Llama 3) menggunakan requests standar (tanpa perlu install library groq)."""
+    try:
+        prompt = buat_prompt_ai(df, strategi)
+        
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "llama3-70b-8192", # Menggunakan model Llama 3 70B yang cerdas dan gratis
+            "messages": [
+                {"role": "system", "content": "Anda adalah asisten AI keuangan berbahasa Indonesia."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.5
+        }
+        
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
+        
+        if response.status_code == 200:
+            hasil_teks = response.json()['choices'][0]['message']['content']
+            return True, hasil_teks
+        else:
+            return False, f"Error Groq API ({response.status_code}): {response.text}"
+            
+    except Exception as e:
+        return False, str(e)
+
+# --- FUNGSI AI: 3. OPENAI / CHATGPT (ALTERNATIF BARU) ---
+def analisa_openai_ai(df, strategi, api_key):
+    """Fungsi ini memanggil API OpenAI (ChatGPT) menggunakan requests."""
+    try:
+        prompt = buat_prompt_ai(df, strategi)
+        
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "gpt-4o-mini", # Model ringan, cerdas, dan cepat dari OpenAI
+            "messages": [
+                {"role": "system", "content": "Anda adalah Analis Saham Profesional berbahasa Indonesia."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.5
+        }
+        
+        response = requests.post(url, headers=headers, json=payload, timeout=20)
+        
+        if response.status_code == 200:
+            hasil_teks = response.json()['choices'][0]['message']['content']
+            return True, hasil_teks
+        else:
+            return False, f"Error OpenAI API ({response.status_code}): {response.text}"
+            
+    except Exception as e:
+        return False, str(e)
+
+
+# --- FUNGSI AI: 4. TRADISIONAL (DARURAT) ---
 def buat_narasi_analisa(df, nama_strategi):
     if df.empty: return ""
     total = len(df)
     saham_beli = list(set(df[df['Sinyal_Investasi'].str.contains('BELI', na=False)]['Ticker'].tolist() + df[df['Sinyal_Trading_Pendek'].str.contains('BELI', na=False)]['Ticker'].tolist()))
     
-    narasi = f"### 💡 Ringkasan Eksekutif (Berbasis Aturan)\n"
+    narasi = f"### 💡 Ringkasan Eksekutif (Berasaskan Peraturan)\n"
     narasi += f"Dari **{total} saham** yang dipindai menggunakan strategi **{nama_strategi}**, berikut adalah intisari pasarnya:\n\n"
     if saham_beli: narasi += f"- 🎯 **Fokus Utama:** Saham **{', '.join(saham_beli)}** masuk ke dalam zona **BELI**.\n"
     else: narasi += f"- ⏳ **Fokus Utama:** Belum ada saham yang memenuhi kriteria **BELI** yang kuat. Mayoritas fase *Pantau*.\n"
+    
+    saham_murah = df[(df['PBV'] < 1.5) & (df['ROE'] > 0.10)]['Ticker'].tolist()
+    saham_uptrend = df[(df['MACD_Bullish'] == True) & (df['Di_Atas_MA20'] == True)]['Ticker'].tolist()
+    saham_oversold = df[(df['RSI_14'] < 35) | (df['Stoch_K'] < 20)]['Ticker'].tolist()
+    
+    if saham_murah: narasi += f"- 💰 **Valuasi & Fundamental:** Saham **{', '.join(saham_murah)}** terdeteksi sedang salah harga (Murah: PBV < 1.5x) namun sehat (ROE > 10%).\n"
+    if saham_uptrend: narasi += f"- 📈 **Momentum Teknikal:** Harga **{', '.join(saham_uptrend)}** sedang dalam tren naik (Uptrend) yang kuat.\n"
+    if saham_oversold: narasi += f"- 🛒 **Peluang Rebound:** Saham **{', '.join(saham_oversold)}** sudah jenuh jual (Oversold), berpeluang melantun naik.\n"
+    
     return narasi
 
 def buat_ringkasan_aksi(df):
@@ -289,7 +354,6 @@ def buat_ringkasan_aksi(df):
     ringkasan = "### 🎯 Rekomendasi Aksi & Target Harga\n"
     ringkasan += "Daftar saham dengan sinyal **BELI** beserta area harga ideal untuk dieksekusi:\n\n"
     
-    # Render tabel markdown biasa khusus untuk ringkasan aksi agar mudah dibaca cepat
     ringkasan += "| Kode Saham | Kategori Sinyal Beli | Area Target Beli (Support) | Area Target Jual (Resisten) |\n"
     ringkasan += "| :--- | :--- | :--- | :--- |\n"
     
@@ -310,7 +374,7 @@ def buat_ringkasan_aksi(df):
 
 # --- ANTARMUKA PENGGUNA (UI) ---
 st.title("📈 Web App Screener Saham BEI")
-st.markdown("Aplikasi web ini menyaring saham berdasarkan analisis fundamental dan sentimen teknikal secara _real-time_, diperkuat dengan **AI Analis Profesional**.")
+st.markdown("Aplikasi web ini menyaring saham berdasarkan analisis fundamental dan sentimen teknikal secara _real-time_, diperkuat dengan **Sistem AI Ganda (Gemini & Llama 3)**.")
 
 # Sidebar Pengaturan
 st.sidebar.header("⚙️ Pengaturan Analisis")
@@ -353,18 +417,40 @@ else:
     kurs_sumber = "Manual (Input User)"
 st.sidebar.info(f"**Kurs Aktif:** Rp {kurs_val:,.0f}\n\n**Sumber:** {kurs_sumber}")
 
-# --- INTEGRASI GOOGLE GEMINI AI ---
+# --- PENGATURAN API KEY (SECRETS) ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 Analisis AI Mendalam")
 st.sidebar.markdown("Aktifkan fitur ini agar AI menganalisa data saham layaknya analis Wall Street.")
-gunakan_ai = st.sidebar.checkbox("Gunakan Google Gemini AI")
+gunakan_ai = st.sidebar.checkbox("Gunakan AI untuk Analisa")
 
-# Mengambil API Key secara aman dari sistem Secrets Streamlit
-# Anda dapat menaruhnya kembali sebagai hardcode api_key_input = "KODE_ANDA" jika diperlukan di lokal.
-try:
-    api_key_input = st.secrets["GEMINI_API_KEY"]
-except (FileNotFoundError, KeyError):
-    api_key_input = ""
+if gunakan_ai:
+    pilihan_ai = st.sidebar.radio("Pilih Engine AI:", [
+        "Otomatis (Sistem Fallback)", 
+        "Google Gemini", 
+        "Meta Llama 3 (Groq)", 
+        "OpenAI (ChatGPT)"
+    ], help="Pilih 'Otomatis' untuk menggunakan Gemini sebagai prioritas utama, dengan opsi lain sebagai cadangan jika limit.")
+    
+    # Mengambil API Key dari Secrets Streamlit (Jika Ada)
+    try: gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
+    except: gemini_api_key = ""
+
+    try: groq_api_key = st.secrets.get("GROQ_API_KEY", "")
+    except: groq_api_key = ""
+    
+    try: openai_api_key = st.secrets.get("OPENAI_API_KEY", "")
+    except: openai_api_key = ""
+
+    # Memungkinkan input manual di UI jika secrets kosong sesuai pilihan AI
+    if pilihan_ai in ["Otomatis (Sistem Fallback)", "Google Gemini"] and not gemini_api_key:
+        gemini_api_key = st.sidebar.text_input("Gemini API Key:", type="password")
+        
+    if pilihan_ai in ["Otomatis (Sistem Fallback)", "Meta Llama 3 (Groq)"] and not groq_api_key:
+        groq_api_key = st.sidebar.text_input("Groq API Key:", type="password", help="Dapatkan di console.groq.com")
+        
+    if pilihan_ai in ["Otomatis (Sistem Fallback)", "OpenAI (ChatGPT)"] and not openai_api_key:
+        openai_api_key = st.sidebar.text_input("OpenAI API Key:", type="password", help="Dapatkan di platform.openai.com")
+
 
 # Tombol Eksekusi
 if st.sidebar.button("Jalankan Pemindaian 🚀", type="primary"):
@@ -373,32 +459,71 @@ if st.sidebar.button("Jalankan Pemindaian 🚀", type="primary"):
     if not df_hasil.empty:
         df_hasil = df_hasil.sort_values(by=['Sinyal_Investasi', 'Sinyal_Trading_Pendek'], ascending=[False, False])
         
-        # Eksekusi Analisa
-        if gunakan_ai and api_key_input:
-            with st.spinner("🤖 AI sedang membedah data dan menyusun analisa komprehensif..."):
-                narasi_komprehensif = analisa_gemini_ai(df_hasil, pilihan_strategi_label, api_key_input)
-                narasi_komprehensif = f"### 🤖 Analisa Eksekutif AI (Gemini)\n\n{narasi_komprehensif}"
+        # --- LOGIKA SISTEM AI BERLAPIS (FALLBACK SYSTEM) ---
+        if gunakan_ai:
+            with st.spinner(f"🤖 AI sedang membedah data menggunakan {pilihan_ai if pilihan_ai != 'Otomatis (Sistem Fallback)' else 'Sistem Otomatis'}..."):
+                narasi_komprehensif = ""
+                
+                # Fungsi Helper Eksekutor AI
+                def jalankan_gemini():
+                    if gemini_api_key:
+                        sukses, hasil = analisa_gemini_ai(df_hasil, pilihan_strategi_label, gemini_api_key)
+                        if sukses: return f"### 🤖 Analisa Eksekutif AI (Sumber: Google Gemini)\n\n{hasil}"
+                        st.warning(f"⚠️ **Gangguan Gemini:** {hasil}")
+                    return ""
+                    
+                def jalankan_groq():
+                    if groq_api_key:
+                        sukses, hasil = analisa_groq_ai(df_hasil, pilihan_strategi_label, groq_api_key)
+                        if sukses: return f"### 🤖 Analisa Eksekutif AI (Sumber: Meta Llama 3 via Groq)\n\n{hasil}"
+                        st.warning(f"⚠️ **Gangguan Groq AI:** {hasil}")
+                    return ""
+                    
+                def jalankan_openai():
+                    if openai_api_key:
+                        sukses, hasil = analisa_openai_ai(df_hasil, pilihan_strategi_label, openai_api_key)
+                        if sukses: return f"### 🤖 Analisa Eksekutif AI (Sumber: OpenAI ChatGPT)\n\n{hasil}"
+                        st.warning(f"⚠️ **Gangguan OpenAI:** {hasil}")
+                    return ""
+
+                # Eksekusi berdasarkan pilihan Radio Button
+                if pilihan_ai == "Google Gemini":
+                    narasi_komprehensif = jalankan_gemini()
+                elif pilihan_ai == "Meta Llama 3 (Groq)":
+                    narasi_komprehensif = jalankan_groq()
+                elif pilihan_ai == "OpenAI (ChatGPT)":
+                    narasi_komprehensif = jalankan_openai()
+                elif pilihan_ai == "Otomatis (Sistem Fallback)":
+                    # Lapis 1: Gemini
+                    narasi_komprehensif = jalankan_gemini()
+                    # Lapis 2: Groq
+                    if not narasi_komprehensif:
+                        st.warning("🔄 Beralih ke Llama 3 (Groq) sebagai cadangan pertama...")
+                        narasi_komprehensif = jalankan_groq()
+                    # Lapis 3: OpenAI
+                    if not narasi_komprehensif:
+                        st.warning("🔄 Beralih ke ChatGPT (OpenAI) sebagai cadangan kedua...")
+                        narasi_komprehensif = jalankan_openai()
+
+                # Lapis Terakhir: Analisa Tradisional (Jika semua AI gagal atau API Key tidak ada)
+                if not narasi_komprehensif:
+                    st.warning("⚠️ Analisa AI gagal atau kunci API tidak lengkap. Menjalankan Analisa Tradisional.")
+                    narasi_komprehensif = buat_narasi_analisa(df_hasil, pilihan_strategi_label)
         else:
-            if gunakan_ai and not api_key_input:
-                st.warning("⚠️ Fitur AI tidak dapat berjalan karena API Key tidak ditemukan di dalam rahasia (Secrets) server.")
             narasi_komprehensif = buat_narasi_analisa(df_hasil, pilihan_strategi_label)
             
         ringkasan_aksi = buat_ringkasan_aksi(df_hasil)
         
         # Formatting Tampilan Utama Tabel HTML
         tampil = df_hasil.copy()
-        
-        # Kolom Mata Uang
         for col in ['Harga', 'Harga_Wajar', 'Target_Beli', 'Target_Jual']:
             tampil[col] = tampil[col].apply(render_currency_html)
             
-        # Kolom Desimal & Kategori
         tampil['PBV'] = tampil['PBV'].apply(lambda x: f"{x:.2f}x" if pd.notnull(x) else '<div class="text-center">-</div>')
         tampil['ROE'] = tampil['ROE'].apply(lambda x: f"{x*100:.1f}%" if pd.notnull(x) else '<div class="text-center">-</div>')
         tampil['RSI_14'] = tampil['RSI_14'].apply(lambda x: f"{x:.0f}" if pd.notnull(x) else '<div class="text-center">-</div>')
         tampil['MACD'] = tampil['MACD_Bullish'].apply(lambda x: "Bull 🟢" if x else "Bear 🔴")
         
-        # Kolom yang akan dirender (hanya menampilkan data utama)
         kolom = ['Ticker', 'Harga', 'Harga_Wajar', 'Target_Beli', 'Target_Jual', 'PBV', 'ROE', 'RSI_14', 'MACD', 'Sinyal_Investasi', 'Sinyal_Trading_Pendek']
         
         st.success("✅ Pemindaian Selesai!")
