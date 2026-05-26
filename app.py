@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import requests
+import time
 
 # --- KONFIGURASI HALAMAN WEB ---
 st.set_page_config(page_title="Screener Saham BEI", page_icon="📈", layout="wide")
@@ -11,8 +13,21 @@ st.set_page_config(page_title="Screener Saham BEI", page_icon="📈", layout="wi
 @st.cache_data(ttl=3600, show_spinner=False)
 def dapatkan_data_saham(ticker_symbol, periode="6mo"):
     try:
-        ticker = yf.Ticker(ticker_symbol)
-        info = ticker.info
+        # Menambahkan Session dan User-Agent khusus untuk menghindari pemblokiran Anti-Bot Yahoo Finance di Cloud
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        })
+        
+        ticker = yf.Ticker(ticker_symbol, session=session)
+        
+        # Penanganan khusus untuk ticker.info yang sering diblokir di Streamlit Cloud
+        try:
+            info = ticker.info
+            if info is None:
+                info = {}
+        except Exception:
+            info = {} # Fallback jika fundamental gagal, tetap bisa lanjut ke teknikal
         
         pe_ratio = info.get('forwardPE') or info.get('trailingPE')
         pbv = info.get('priceToBook')
@@ -91,11 +106,14 @@ def dapatkan_data_saham(ticker_symbol, periode="6mo"):
             'Dekat_BB_Bawah': dekat_bb_bawah,
             'Stoch_K': stoch_k_terakhir
         }
-    except:
+    except Exception as e:
+        # Jika terjadi error fatal di luar dugaan, kita bisa melihatnya di log console server
+        print(f"Error fetching {ticker_symbol}: {str(e)}")
         return None
 
 def saring_saham_pilihan(daftar_saham, periode, strategi_pilihan):
     hasil_analisis = []
+    error_tickers = []
     
     # Progress bar di UI web
     progress_text = "Memindai saham..."
@@ -105,10 +123,19 @@ def saring_saham_pilihan(daftar_saham, periode, strategi_pilihan):
         data = dapatkan_data_saham(tkr, periode)
         if data:
             hasil_analisis.append(data)
+        else:
+            error_tickers.append(tkr.replace('.JK', ''))
+            
         # Update progress bar
         my_bar.progress((i + 1) / len(daftar_saham), text=f"Memindai {tkr}...")
+        # Jeda 0.5 detik per iterasi untuk meminimalisasi risiko diblokir karena rate-limit
+        time.sleep(0.5) 
         
     my_bar.empty() # Hilangkan bar setelah selesai
+    
+    # Beri peringatan spesifik jika ada saham yang gagal ditarik
+    if error_tickers:
+        st.warning(f"⚠️ Gagal menarik data untuk: **{', '.join(error_tickers)}**. Data mungkin kosong atau diblokir oleh server Yahoo.")
             
     if not hasil_analisis:
         return pd.DataFrame()
