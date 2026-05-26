@@ -210,11 +210,10 @@ def analisa_gemini_ai(df, strategi, api_key):
     try:
         genai.configure(api_key=api_key)
         
-        # 1. Siapkan DataFrame khusus AI (bersihkan format agar AI mudah membaca)
+        # 1. Siapkan DataFrame khusus AI
         kolom_penting = ['Ticker', 'Harga', 'Harga_Wajar', 'Target_Beli', 'Target_Jual', 'PBV', 'PE_Ratio', 'ROE', 'RSI_14', 'MACD_Bullish', 'Sinyal_Investasi', 'Sinyal_Trading_Pendek']
         df_ai = df[kolom_penting].copy()
         
-        # Format angka menjadi string yang jelas agar AI tidak salah menerjemahkan desimal
         df_ai['MACD_Bullish'] = df_ai['MACD_Bullish'].apply(lambda x: "Uptrend (Bullish)" if x else "Downtrend (Bearish)")
         df_ai['ROE'] = df_ai['ROE'].apply(lambda x: f"{x*100:.1f}%" if pd.notnull(x) else "Data Kosong")
         df_ai['PBV'] = df_ai['PBV'].apply(lambda x: f"{x:.2f}x" if pd.notnull(x) else "Data Kosong")
@@ -241,21 +240,32 @@ def analisa_gemini_ai(df, strategi, api_key):
         Gunakan gaya bahasa Indonesia yang tajam, meyakinkan, namun tetap objektif. Jangan sekadar membaca ulang tabel, tapi berikan *insight* korelasi antar datanya.
         """
         
-        # 2. Sistem Fallback Otomatis (Mengatasi Error 404 Model Not Found)
-        try:
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            response = model.generate_content(prompt)
-        except Exception as e_model:
-            # Jika gemini-1.5-flash tidak ditemukan di versi SDK server, turunkan ke gemini-pro
-            if "404" in str(e_model) or "not found" in str(e_model).lower():
-                model = genai.GenerativeModel('gemini-pro')
-                response = model.generate_content(prompt)
-            else:
-                raise e_model # Lempar error jika masalahnya bukan karena versi model
+        # 2. Sistem Penemuan Model Dinamis (Mengatasi Error 404 Secara Otomatis)
+        valid_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                valid_models.append(m.name)
+                
+        if not valid_models:
+            return "⚠️ **Gagal:** API Key Anda valid, tetapi tidak memiliki akses ke model AI generasi teks manapun."
+            
+        # Prioritaskan model generasi terbaru, jika tidak ada, gunakan opsi pertama yang tersedia
+        target_model = valid_models[0]
+        for pref in ['models/gemini-1.5-flash', 'models/gemini-1.5-pro', 'models/gemini-1.0-pro', 'models/gemini-pro']:
+            if pref in valid_models:
+                target_model = pref
+                break
+                
+        # Hapus prefix 'models/' agar format nama dikenali oleh SDK
+        clean_model_name = target_model.replace('models/', '')
+        
+        # Eksekusi Analisa
+        model = genai.GenerativeModel(clean_model_name)
+        response = model.generate_content(prompt)
 
         return response.text
     except Exception as e:
-        return f"⚠️ **Gagal menghasilkan analisa AI:** {str(e)}\n\nPastikan API Key valid, dan tidak ada masalah koneksi pada server Streamlit."
+        return f"⚠️ **Gagal menghasilkan analisa AI:** {str(e)}\n\nPastikan API Key valid, dan tidak ada gangguan koneksi."
 
 # --- FUNGSI PEMBUAT NARASI OTOMATIS (FALLBACK TRADISIONAL) ---
 def buat_narasi_analisa(df, nama_strategi):
@@ -343,13 +353,14 @@ else:
     kurs_sumber = "Manual (Input User)"
 st.sidebar.info(f"**Kurs Aktif:** Rp {kurs_val:,.0f}\n\n**Sumber:** {kurs_sumber}")
 
-# --- INTEGRASI GOOGLE GEMINI AI (AMAN MENGGUNAKAN SECRETS) ---
+# --- INTEGRASI GOOGLE GEMINI AI ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 Analisis AI Mendalam")
 st.sidebar.markdown("Aktifkan fitur ini agar AI menganalisa data saham layaknya analis Wall Street.")
 gunakan_ai = st.sidebar.checkbox("Gunakan Google Gemini AI")
 
 # Mengambil API Key secara aman dari sistem Secrets Streamlit
+# Anda dapat menaruhnya kembali sebagai hardcode api_key_input = "KODE_ANDA" jika diperlukan di lokal.
 try:
     api_key_input = st.secrets["GEMINI_API_KEY"]
 except (FileNotFoundError, KeyError):
