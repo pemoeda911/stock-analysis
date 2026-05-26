@@ -370,7 +370,7 @@ gunakan_ai = st.sidebar.checkbox("Gunakan Google Gemini AI")
 
 # HARDCODE API KEY DI SINI
 # PENTING: Jangan unggah script ini ke GitHub Publik jika API Key terisi!
-api_key_input = "MASUKKAN_API_KEY_ANDA_DI_SINI"
+api_key_input = "AIzaSyD7cr3EQ7OxkGNfRoj3eK21IPuqtNXKEFI"
 
 # Tombol Eksekusi
 if st.sidebar.button("Jalankan Pemindaian 🚀", type="primary"):
