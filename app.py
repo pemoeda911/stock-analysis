@@ -262,7 +262,7 @@ def analisa_gemini_ai(df, strategi, api_key):
 
 # --- FUNGSI AI: 2. GROQ / LLAMA 3 (CADANGAN) ---
 def analisa_groq_ai(df, strategi, api_key):
-    """Fungsi ini memanggil API Groq (Llama 3) menggunakan requests standar (tanpa perlu install library groq)."""
+    """Fungsi ini memanggil API Groq menggunakan model terbaru."""
     try:
         prompt = buat_prompt_ai(df, strategi)
         
@@ -272,7 +272,7 @@ def analisa_groq_ai(df, strategi, api_key):
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "llama3-70b-8192", # Menggunakan model Llama 3 70B yang cerdas dan gratis
+            "model": "llama-3.3-70b-versatile", # Update model yang didukung saat ini
             "messages": [
                 {"role": "system", "content": "Anda adalah asisten AI keuangan berbahasa Indonesia."},
                 {"role": "user", "content": prompt}
@@ -286,24 +286,35 @@ def analisa_groq_ai(df, strategi, api_key):
             hasil_teks = response.json()['choices'][0]['message']['content']
             return True, hasil_teks
         else:
-            return False, f"Error Groq API ({response.status_code}): {response.text}"
+            try:
+                err_msg = response.json().get('error', {}).get('message', response.text)
+            except:
+                err_msg = response.text
+                
+            if response.status_code == 429:
+                 return False, f"Kuota API Groq Habis (Error 429). Pesan: {err_msg}"
+                 
+            return False, f"Error Groq API ({response.status_code}): {err_msg}"
             
     except Exception as e:
         return False, str(e)
 
-# --- FUNGSI AI: 3. OPENAI / CHATGPT (ALTERNATIF BARU) ---
-def analisa_openai_ai(df, strategi, api_key):
-    """Fungsi ini memanggil API OpenAI (ChatGPT) menggunakan requests."""
+# --- FUNGSI AI: 3. OPENROUTER (ALTERNATIF BARU) ---
+def analisa_openrouter_ai(df, strategi, api_key):
+    """Fungsi ini memanggil API OpenRouter (Agregator Model AI)."""
     try:
         prompt = buat_prompt_ai(df, strategi)
         
-        url = "https://api.openai.com/v1/chat/completions"
+        url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://screener-saham-bei.streamlit.app", # Opsional: Mengidentifikasi asal aplikasi
+            "X-Title": "Web App Screener Saham BEI" # Opsional: Nama aplikasi di dashboard OpenRouter
         }
         payload = {
-            "model": "gpt-4o-mini", # Model ringan, cerdas, dan cepat dari OpenAI
+            # Anda bisa mengganti model di sini. Contoh: "openai/gpt-4o-mini", "anthropic/claude-3-haiku", dll.
+            "model": "openai/gpt-4o-mini", 
             "messages": [
                 {"role": "system", "content": "Anda adalah Analis Saham Profesional berbahasa Indonesia."},
                 {"role": "user", "content": prompt}
@@ -317,7 +328,16 @@ def analisa_openai_ai(df, strategi, api_key):
             hasil_teks = response.json()['choices'][0]['message']['content']
             return True, hasil_teks
         else:
-            return False, f"Error OpenAI API ({response.status_code}): {response.text}"
+            try:
+                err_msg = response.json().get('error', {}).get('message', response.text)
+            except:
+                err_msg = response.text
+                
+            # OpenRouter sering menggunakan kode 402 untuk saldo/kredit yang habis
+            if response.status_code == 429 or response.status_code == 402:
+                return False, f"Kuota/Saldo API OpenRouter Habis (Error {response.status_code}). Pesan: {err_msg}"
+                
+            return False, f"Error OpenRouter API ({response.status_code}): {err_msg}"
             
     except Exception as e:
         return False, str(e)
@@ -428,7 +448,7 @@ if gunakan_ai:
         "Otomatis (Sistem Fallback)", 
         "Google Gemini", 
         "Meta Llama 3 (Groq)", 
-        "OpenAI (ChatGPT)"
+        "OpenRouter"
     ], help="Pilih 'Otomatis' untuk menggunakan Gemini sebagai prioritas utama, dengan opsi lain sebagai cadangan jika limit.")
     
     # Mengambil API Key dari Secrets Streamlit (Jika Ada)
@@ -438,8 +458,8 @@ if gunakan_ai:
     try: groq_api_key = st.secrets.get("GROQ_API_KEY", "")
     except: groq_api_key = ""
     
-    try: openai_api_key = st.secrets.get("OPENAI_API_KEY", "")
-    except: openai_api_key = ""
+    try: openrouter_api_key = st.secrets.get("OPENROUTER_API_KEY", "")
+    except: openrouter_api_key = ""
 
     # Memungkinkan input manual di UI jika secrets kosong sesuai pilihan AI
     if pilihan_ai in ["Otomatis (Sistem Fallback)", "Google Gemini"] and not gemini_api_key:
@@ -448,8 +468,8 @@ if gunakan_ai:
     if pilihan_ai in ["Otomatis (Sistem Fallback)", "Meta Llama 3 (Groq)"] and not groq_api_key:
         groq_api_key = st.sidebar.text_input("Groq API Key:", type="password", help="Dapatkan di console.groq.com")
         
-    if pilihan_ai in ["Otomatis (Sistem Fallback)", "OpenAI (ChatGPT)"] and not openai_api_key:
-        openai_api_key = st.sidebar.text_input("OpenAI API Key:", type="password", help="Dapatkan di platform.openai.com")
+    if pilihan_ai in ["Otomatis (Sistem Fallback)", "OpenRouter"] and not openrouter_api_key:
+        openrouter_api_key = st.sidebar.text_input("OpenRouter API Key:", type="password", help="Dapatkan di openrouter.ai/keys")
 
 
 # Tombol Eksekusi
@@ -479,11 +499,11 @@ if st.sidebar.button("Jalankan Pemindaian 🚀", type="primary"):
                         st.warning(f"⚠️ **Gangguan Groq AI:** {hasil}")
                     return ""
                     
-                def jalankan_openai():
-                    if openai_api_key:
-                        sukses, hasil = analisa_openai_ai(df_hasil, pilihan_strategi_label, openai_api_key)
-                        if sukses: return f"### 🤖 Analisa Eksekutif AI (Sumber: OpenAI ChatGPT)\n\n{hasil}"
-                        st.warning(f"⚠️ **Gangguan OpenAI:** {hasil}")
+                def jalankan_openrouter():
+                    if openrouter_api_key:
+                        sukses, hasil = analisa_openrouter_ai(df_hasil, pilihan_strategi_label, openrouter_api_key)
+                        if sukses: return f"### 🤖 Analisa Eksekutif AI (Sumber: OpenRouter)\n\n{hasil}"
+                        st.warning(f"⚠️ **Gangguan OpenRouter:** {hasil}")
                     return ""
 
                 # Eksekusi berdasarkan pilihan Radio Button
@@ -491,8 +511,8 @@ if st.sidebar.button("Jalankan Pemindaian 🚀", type="primary"):
                     narasi_komprehensif = jalankan_gemini()
                 elif pilihan_ai == "Meta Llama 3 (Groq)":
                     narasi_komprehensif = jalankan_groq()
-                elif pilihan_ai == "OpenAI (ChatGPT)":
-                    narasi_komprehensif = jalankan_openai()
+                elif pilihan_ai == "OpenRouter":
+                    narasi_komprehensif = jalankan_openrouter()
                 elif pilihan_ai == "Otomatis (Sistem Fallback)":
                     # Lapis 1: Gemini
                     narasi_komprehensif = jalankan_gemini()
@@ -500,10 +520,10 @@ if st.sidebar.button("Jalankan Pemindaian 🚀", type="primary"):
                     if not narasi_komprehensif:
                         st.warning("🔄 Beralih ke Llama 3 (Groq) sebagai cadangan pertama...")
                         narasi_komprehensif = jalankan_groq()
-                    # Lapis 3: OpenAI
+                    # Lapis 3: OpenRouter
                     if not narasi_komprehensif:
-                        st.warning("🔄 Beralih ke ChatGPT (OpenAI) sebagai cadangan kedua...")
-                        narasi_komprehensif = jalankan_openai()
+                        st.warning("🔄 Beralih ke OpenRouter sebagai cadangan kedua...")
+                        narasi_komprehensif = jalankan_openrouter()
 
                 # Lapis Terakhir: Analisa Tradisional (Jika semua AI gagal atau API Key tidak ada)
                 if not narasi_komprehensif:
